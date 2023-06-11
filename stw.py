@@ -11,8 +11,8 @@ from collections import namedtuple
 from time import time, sleep
 from machine import Pin, PWM, Timer
 from busio import I2C
-from adafruit_lis331 import LIS331    # FIXME: replace!!!
 import micropython
+import _thread
 import board
 import gc
 
@@ -38,8 +38,10 @@ T0L = 521 # 4.17 us
 M1_PIN = Pin(_____, Pin.OUT)    # idk what this and below should be, so just Pin for now
 M2_PIN = Pin(_____, Pin.OUT)
 
-ACCELEROMETER_I2C = I2C(_____, _____)
-ACCELEROMETER = LIS331(ACCELEROMETER_I2C)
+# Using H3LIS331DL
+SDA = Pin(_____, Pin.OUT)
+SCL = Pin(_____, Pin.OUT)
+ACCELEROMETER_I2C = I2C(sda=SDA, scl=SCL)
 
 TRANSMITTER_CH1P = Pin(______, Pin.IN)
 TRANSMITTER_CH2P = Pin(______, Pin.IN)
@@ -69,7 +71,7 @@ _m2_packet = 48
 
 def get_accelerometer() -> accelerometer_data:
     # TODO: use raw I2C
-    return accelerometer_data(*ACCELEROMETER.acceleration)
+    return accelerometer_data(____________)
 
 def sleep_clock(n: int):
     c = utime.ticks_cpu()
@@ -162,8 +164,9 @@ def update_motor_speeds(d: direction):
     set_motor_speeds(m1s, m2s)
 
 ### Mainloop ################################
+# Calculation and DShot run on separate cores
 
-# TODO: replace manual mainloop with built-in scheduling (e.g. machine.Timer or something else)
+_thread.start_new_thread(dshot_mainloop, ())
 
 t = time()
 while True:
