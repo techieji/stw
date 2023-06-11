@@ -2,8 +2,10 @@
 
 import time
 import micropython
+import gc
 
 # Calibrate (also try floats, idk if it'll work)
+# Also, try switching to utime.ticks_cpu()
 T1H = 5
 T1L = 2
 T0H = 2
@@ -43,6 +45,7 @@ def write_speeds(m1: int, m2: int):
             time.sleep_us(T0L)
 
 def mainloop():
+    gc.disable()
     global M1_THROTTLE   # When translating to C, use FIFO
     global M2_THROTTLE
     while True:
