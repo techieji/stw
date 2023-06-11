@@ -11,9 +11,12 @@ from collections import namedtuple
 from time import time, sleep
 from machine import Pin, PWM, Timer
 from busio import I2C
-from adafruit_lis331 import LIS331
+from adafruit_lis331 import LIS331    # FIXME: replace!!!
+import micropython
 import board
 import gc
+
+gc.disable()
 
 ### Constants ###############################
 
@@ -21,10 +24,19 @@ DELAY_TIME = 0            # As fast as possible    (in seconds)
 DIAMETER = 8
 MAX_RPM = 2000            # Not true max, but rather maximum sustainable rpm (cruising)
 
+# DShot stuff
+TOLERANCE = 20      # Number of clock cycles dshot can tolerate an error
+
+# Number of clock cycles to wait for high and low
+T1H = 625 # 5 us
+T1L = 209 # 1.67 us
+T0H = 313 # 2.5 us
+T0L = 521 # 4.17 us
+
 # idk what pull-up and pull-down are used for, so FIXME
 
-ESC1 = Pin(_____, Pin.OUT)    # idk what this and below should be, so just Pin for now
-ESC2 = Pin(_____, Pin.OUT)
+M1_PIN = Pin(_____, Pin.OUT)    # idk what this and below should be, so just Pin for now
+M2_PIN = Pin(_____, Pin.OUT)
 
 ACCELEROMETER_I2C = I2C(_____, _____)
 ACCELEROMETER = LIS331(ACCELEROMETER_I2C)
@@ -50,11 +62,56 @@ raw_controller_data = namedtuple('raw_controller_data', 'ch1 ch2 ch3 ch4')    # 
 
 heading = 0
 
+_m1_packet = 48
+_m2_packet = 48
+
 ### I/O functions ###########################
 
 def get_accelerometer() -> accelerometer_data:
+    # TODO: use raw I2C
     return accelerometer_data(*ACCELEROMETER.acceleration)
 
+def sleep_clock(n: int):
+    c = utime.ticks_cpu()
+    # Busy wait
+    while utime.ticks_diff(utime.ticks_cpu(), c) - TOLERANCE < n: pass
+
+@micropython.viper
+def write_speeds(m1: int, m2: int):
+    for i in range(15, -1, -1):
+        m1s = (m1 >> i) & 1
+        m2s = (m2 >> i) & 1
+        M1_PIN.value(1)
+        M2_PIN.value(1)
+        if m1s and m2s:
+            sleep_clock(T1H)
+            M1_PIN.value(0)
+            M2_PIN.value(0)
+            sleep_clock(T1L)
+        elif m1s and not m2s:
+            sleep_clock(T0H)
+            M2_PIN.value(0)
+            sleep_clock(T1H - T0H)
+            M1_PIN.value(0)
+            sleep_clock(T1L)
+        elif not m1s and m2s:
+            sleep_clock(T0H)
+            M1_PIN.value(0)
+            sleep_clock(T1H - T0H)
+            M2_PIN.value(0)
+            sleep_clock(T1L)
+        elif m1s and m2s:
+            sleep_clock(T0H)
+            M1_PIN.value(0)
+            M2_PIN.value(0)
+            sleep_clock(T0L)
+
+def dshot_mainloop():
+    gc.disable()
+    while True:
+        write_speeds(_m1_packet, _m2_packet)
+
+@micropython.native    # Maybe viper?
 def make_dshot_packet(throttle: int, telemetry: int = 0):
     packet = (throttle << 1) | telemetry
     crc = 0     # CRC code copied from https://github.com/dmrlawson/raspberrypi-dshot/blob/master/dshotmodule.c
@@ -68,12 +125,11 @@ def make_dshot_packet(throttle: int, telemetry: int = 0):
 
 def set_raw_motor_speeds(s1: float, s2: float):
     # Docs I read: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
-    s1i = int(s1 * (2**16 - 1 - 48))
-    s2i = int(s2 * (2**16 - 1 - 48))
-    p1 = make_dshot_packet(s1i)
-    p2 = make_dshot_packet(s2i)
-    while p2 != 0:
-        pass
+    global _m1_packet, _m2_packet
+    s1i = int(s1 * (2**16 - 49))
+    s2i = int(s2 * (2**16 - 49))
+    _m1_packet = make_dshot_packet(s1i)
+    _m2_packet = make_dshot_packet(s2i)
 
 def set_motor_speeds(s1: float, s2: float):    # Uses proper speeds, not electric values
     ...     # Need to use trial and error
@@ -116,4 +172,3 @@ while True:
     t = time()
     d = get_controller_direction()
     update_motor_speeds(d)
-    # time.sleep(DELAY_TIME)

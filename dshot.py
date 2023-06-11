@@ -1,18 +1,26 @@
 # Translate to C if needed
 
-import time
+import utime
 import micropython
 import gc
 
-# Calibrate (also try floats, idk if it'll work)
-# Also, try switching to utime.ticks_cpu()
-T1H = 5
-T1L = 2
-T0H = 2
-T0L = 5
+# Calibrate
+# switch to utime.ticks_cpu()
+# Pico clock frequency: 125 MHz
+T1H = 625 # 5 us
+T1L = 209 # 1.67 us
+T0H = 313 # 2.5 us
+T0L = 521 # 4.17 us
+
+TOLERANCE = 20
 
 M1_PIN = _____
 M2_PIN = _____
+
+def sleep_clock(n: int):
+    c = utime.ticks_cpu()
+    # Busy wait
+    while utime.ticks_diff(utime.ticks_cpu(), c) - TOLERANCE < n: pass
 
 @micropython.viper
 def write_speeds(m1: int, m2: int):
@@ -22,27 +30,30 @@ def write_speeds(m1: int, m2: int):
         M1_PIN.value(1)
         M2_PIN.value(1)
         if m1s and m2s:
-            time.sleep_us(T1H)
+            sleep_clock(T1H)
             M1_PIN.value(0)
             M2_PIN.value(0)
-            time.sleep_us(T1L)
+            sleep_clock(T1L)
         elif m1s and not m2s:
-            time.sleep_us(T0H)
+            sleep_clock(T0H)
             M2_PIN.value(0)
-            time.sleep_us(T1H - T0H)
+            sleep_clock(T1H - T0H)
             M1_PIN.value(0)
-            time.sleep(T1L)
+            sleep_clock(T1L)
         elif not m1s and m2s:
-            time.sleep_us(T0H)
+            sleep_clock(T0H)
             M1_PIN.value(0)
-            time.sleep_us(T1H - T0H)
+            sleep_clock(T1H - T0H)
             M2_PIN.value(0)
-            time.sleep(T1L)
+            sleep_clock(T1L)
         elif m1s and m2s:
-            time.sleep_us(T0H)
+            sleep_clock(T0H)
             M1_PIN.value(0)
             M2_PIN.value(0)
-            time.sleep_us(T0L)
+            sleep_clock(T0L)
+
+def raw_speed_to_packet(s: float) -> int:
+    pass
 
 def mainloop():
     gc.disable()
