@@ -113,20 +113,15 @@ def dshot_mainloop():
     while True:
         write_speeds(_m1_packet, _m2_packet)
 
-@micropython.native    # Maybe viper?
-def make_dshot_packet(throttle: int, telemetry: int = 0):
-    packet = (throttle << 1) | telemetry
-    crc = 0     # CRC code copied from https://github.com/dmrlawson/raspberrypi-dshot/blob/master/dshotmodule.c
-    packet_copy = packet
-    for _ in range(3):
-        crc ^= packet_copy
-        packet_copy >>= 3
-    crc &= 0xf
+@micropython.viper
+def make_dshot_packet(throttle: int):
+    # Docs I read: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
+    packet = throttle << 1
+    crc = (packet ^ (packet >> 4) ^ (packet >> 8)) & 0xf
     packet = (packet << 4) | crc
     return packet
 
 def set_raw_motor_speeds(s1: float, s2: float):
-    # Docs I read: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
     global _m1_packet, _m2_packet
     s1i = int(s1 * (2**16 - 49))
     s2i = int(s2 * (2**16 - 49))
@@ -143,6 +138,9 @@ def get_raw_controller_data() -> raw_controller_data:
         TRANSMITTER_CH3.duty_u16() / 65535,
         TRANSMITTER_CH4.duty_u16() / 65535
     )
+
+def get_controller_direction():
+    pass
 
 ### Logic ###################################
 
