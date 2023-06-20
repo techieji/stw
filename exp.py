@@ -1,10 +1,13 @@
 from machine import Pin, I2C
 from micropython import viper, native
 from rp2 import PIO, StateMachine, asm_pio
-from math import cos
+from math import cos, tau
 from decimal import Decimal
 import struct
 import utime
+import _thread
+
+Pin(25).on()     # Visual check to see if code is running (I'd do a piezo, but I don't have one...)
 
 ### Hardware & Constants ################################################################
 # Motor pins:
@@ -39,10 +42,13 @@ DIAMETER = 8        # inches
 R = DIAMETER // 2
 
 ### Global variables ####################################################################
-# Angles are in radians (look, it's convenient, alright?)
+# Global variables take around 1 ms to update between cores, so there might be a slight
+# directional bias during control
 
+# Angles are in radians (look, it's convenient, alright?)
 heading = 0
 
+max_speed = 0    # Use throttle to set
 direction = 0
 magnitude = 0    # From 0-1000 where 2000 is top motor speed
 
@@ -88,21 +94,26 @@ class DShotPIO:
 def motor_control():
     m1 = DShotPIO(0, M1)
     m2 = DShotPIO(1, M2)
-    # Arming sequence is implicit (in position tracker)
+    t = utime.ticks_ms()
+    while utime.ticks_diff(utime.ticks_ms(), t) < 500:
+        m1.arm()
+        m2.arm()
     while True:
-        baseline = 2000 - magnitude
-        s1 = baseline + int(magnitude * math.cos(heading - direction))
-        s2 = baseline - int(magnitude * math.cos(heading - direction))
+        baseline = max_speed - magnitude
+        # I feel like there's a more elegant way to do this
+        s1 = max(baseline + int(magnitude * math.cos(heading - direction)), 0)
+        s2 = max(baseline - int(magnitude * math.cos(heading - direction)), 0)
         m1.throttle(s1)    # May have to interleave, but fingers crossed
         m2.throttle(s2)
 
 ### Position tracker ####################################################################
 
 def setup_accel():
-    i2c.writeto_mem(H3LIS331DL_ADDR, CTRL_REG1_ADDR, 0b001_11_111 .to_bytes(1, 'little'))
+    i2c.writeto_mem(H3LIS331DL_ADDR, CTRL_REG1_ADDR, 0b001_11_111 .to_bytes(1, 'little'))   # Enable collection at 1000 Hz
 
 @viper
 def get_accel(n=1):    # Average over n iterations
+    # TODO TODO TODO: Rewrite this code to use a SINGLE axis (faster and more reliable)
     x, y, z = 0, 0, 0
     for _ in range(n):
         _x, _y, _z = struct.unpack('<hhh', b''.join(i2c.readfrom_mem(H3LIS331DL_ADDR, OUT_X_L_ADDR + i, 1) for i in range(6)))
@@ -117,10 +128,12 @@ def get_accel(n=1):    # Average over n iterations
     mag = (x**2 + y**2 + z**2).sqrt()
     return mag
 
-def update_controller_direction():
-    global direction, magnitude
+def update_controller():
+    global direction, magnitude, max_speed
+    ch1 = RC_CH1.duty_u16()
     ch3 = RC_CH3.duty_u16()
     ch4 = RC_CH4.duty_u16()
+    max_speed = ch1 * 2000 / 65535
     direction = math.atan(ch3/ch4)    # TODO: check order
     magnitude = (ch3**2 + ch4**2).sqrt() * 900 / 65535
     # Really high magnitudes cause high loads (prediction)
@@ -130,12 +143,13 @@ def update_heading(a: Decimal, dt: int):    # MAY lose precision over time
     global heading
     s = (a*R).sqrt()
     heading += s*dt / R    # Consider implementing wrap-around logic
+    if heading > tau:
+        heading -= tau
 
 def position_tracker():
-    utime.sleep(1)       # Arming sequence (assuming motor control is running)
     while True:
         t = utime.ticks_us()
-        update_controller_direction()
+        update_controller()
         update_heading(get_accel(), utime.ticks_diff(utime.ticks_us(), t))
 
 ### "Oh yeah, it's all coming together" #################################################
