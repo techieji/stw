@@ -2,26 +2,38 @@ from machine import Pin, I2C
 from micropython import viper, native
 from rp2 import PIO, StateMachine, asm_pio
 from math import cos
+from decimal import Decimal
 import struct
 import utime
 
 ### Hardware & Constants ################################################################
+# Motor pins:
+#   M1: 0
+#   M2: 1
+# Receiver pins:
+#   ch1: 2
+#   ch2: 3
+#   ch3: 4
+#   ch4: 5
+# Accelerometer pins:
+#   sda: 8
+#   scl: 9
 
-M1 = Pin(____)
-M2 = Pin(____)
+M1 = Pin(0)
+M2 = Pin(1)
 
 # May need to set freq and duty cycle
-RC_CH1 = PWM(Pin(____))
-RC_CH2 = PWM(Pin(____))
-RC_CH3 = PWM(Pin(____))
-RC_CH4 = PWM(Pin(____))
-RC_CH5 = PWM(Pin(____))
-RC_CH6 = PWM(Pin(____))
+RC_CH1 = PWM(Pin(2))
+RC_CH2 = PWM(Pin(3))
+RC_CH3 = PWM(Pin(4))
+RC_CH4 = PWM(Pin(5))
 
-i2c = I2C(0, sda=Pin(____), scl=Pin(____))
+i2c = I2C(0, sda=Pin(8), scl=Pin(9))
 H3LIS331DL_ADDR = 0b0011000    # See page 12 sec 6.1.1 for details on LSB
-MAX_G = 100     # I think? I believe this is modifiable
-CONVERSION_FACTOR = 12 / (10**-6) * 32.174 * 2 * MAX_G / 4096      # g -> in/ms^2
+CTRL_REG1_ADDR = 0x20
+OUT_X_L_ADDR = 0x28
+MAX_G = 100     # This is modifiable using CTRL_REG4, but is left at default of 100 gs
+CONVERSION_FACTOR = Decimal(12) / (10**-9) * Decimal(32.174) * 2 * MAX_G / 4096      # g -> in/us^2
 
 DIAMETER = 8        # inches
 R = DIAMETER // 2
@@ -60,14 +72,15 @@ class DShotPIO:
         self._sm.active(1)
 
     @viper
-    def throttle(self, throttle):    
-        # No use for 0-47
-        throttle += 48
+    def _throttle(self, throttle):
         throttleWithTelemetry = throttle << 1
         crc = (throttleWithTelemetry ^ (throttleWithTelemetry >> 4) ^ (throttleWithTelemetry >> 8)) & 0x0F
         dShotPacket = (throttleWithTelemetry << 4) | crc
         rightPaddedPacket = dShotPacket << 16
         self._sm.put(rightPaddedPacket)
+        
+    def throttle(self, throttle): self._throttle(throttle + 48)
+    def arm(self): self._throttle(0)    # Has to run continuously for 200 ms (I think?)
 
 ### Motor control #######################################################################
 
@@ -85,14 +98,23 @@ def motor_control():
 
 ### Position tracker ####################################################################
 
+def setup_accel():
+    i2c.writeto_mem(H3LIS331DL_ADDR, CTRL_REG1_ADDR, 0b001_11_111 .to_bytes(1, 'little'))
+
 @viper
-def get_accel():
-    # See: https://github.com/mattytrentini/MicroPython-LIS3DH/blob/master/lis3dh.py#L165
-    x, y, z = struct.unpack('<hhh', i2c.readfrom_mem(0b10101000, 6))
-    x = x * CONVERSION_FACTOR
-    y = y * CONVERSION_FACTOR
-    z = z * CONVERSION_FACTOR
-    mag = sqrt(x**2 + y**2 + z**2)
+def get_accel(n=1):    # Average over n iterations
+    x, y, z = 0, 0, 0
+    for _ in range(n):
+        _x, _y, _z = struct.unpack('<hhh', b''.join(i2c.readfrom_mem(H3LIS331DL_ADDR, OUT_X_L_ADDR + i, 1) for i in range(6)))
+        x += _x
+        y += _y
+        z += _z
+    z /= n
+    z -= 1    # Remove gravitational force
+    x *= CONVERSION_FACTOR / n
+    y *= CONVERSION_FACTOR / n
+    z *= CONVERSION_FACTOR
+    mag = (x**2 + y**2 + z**2).sqrt()
     return mag
 
 def update_controller_direction():
@@ -100,23 +122,24 @@ def update_controller_direction():
     ch3 = RC_CH3.duty_u16()
     ch4 = RC_CH4.duty_u16()
     direction = math.atan(ch3/ch4)    # TODO: check order
-    magnitude = sqrt(ch3**2 + ch4**2) * 900 / 65535
+    magnitude = (ch3**2 + ch4**2).sqrt() * 900 / 65535
     # Really high magnitudes cause high loads (prediction)
 
 @viper
-def update_heading(a: float, dt: float):    # MAY lose precision over time
+def update_heading(a: Decimal, dt: int):    # MAY lose precision over time
     global heading
-    s = sqrt(a*R)
+    s = (a*R).sqrt()
     heading += s*dt / R    # Consider implementing wrap-around logic
 
 def position_tracker():
     utime.sleep(1)       # Arming sequence (assuming motor control is running)
     while True:
-        t = utime.ticks_ms()
+        t = utime.ticks_us()
         update_controller_direction()
-        update_heading(get_accel(), utime.ticks_diff(utime.ticks_ms(), t))
+        update_heading(get_accel(), utime.ticks_diff(utime.ticks_us(), t))
 
 ### "Oh yeah, it's all coming together" #################################################
 
+setup_accel()
 _thread.start_new_thread(motor_control, ())
 position_tracker()
